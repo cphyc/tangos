@@ -2,6 +2,7 @@ from __future__ import absolute_import
 from .. import core, config
 from ..core import Simulation, TimeStep
 from ..log import logger
+from .. import parallel_tasks
 import six
 import numpy as np
 
@@ -32,7 +33,9 @@ class SimulationAdderUpdater(object):
 
         self.add_simulation_properties()
 
-        for ts_filename in self.simulation_output.enumerate_timestep_extensions():
+        for ts_filename in parallel_tasks.distributed(
+            self.simulation_output.enumerate_timestep_extensions()
+        ):
             if not self.timestep_exists_for_extension(ts_filename):
                 ts = self.add_timestep(ts_filename)
                 self.add_timestep_properties(ts)
@@ -55,12 +58,14 @@ class SimulationAdderUpdater(object):
     def add_timestep(self, ts_extension):
         logger.info("Add timestep %r to simulation %r",ts_extension,self.basename)
         ex = TimeStep(self._get_simulation(), ts_extension)
-        return self.session.merge(ex)
+        with parallel_tasks.ExclusiveLock("add_simulation"):
+            return self.session.merge(ex)
 
     def add_simulation(self):
         sim = Simulation(self.basename)
-        self.session.add(sim)
-        self.session.commit()
+        with parallel_tasks.ExclusiveLock("add_simulation"):
+            self.session.add(sim)
+            self.session.commit()
 
     def add_simulation_properties(self):
         sim = self._get_simulation()
@@ -76,7 +81,8 @@ class SimulationAdderUpdater(object):
             else:
                 logger.warn("Simulation property %r already exists", k)
 
-        self.session.commit()
+        with parallel_tasks.ExclusiveLock("add_simulation"):
+            self.session.commit()
 
     @staticmethod
     def _autoadd_zeros(enumerate_fn):
@@ -119,8 +125,9 @@ class SimulationAdderUpdater(object):
                 halos.append(h)
 
         logger.info("Add %d %ss to timestep %r", len(halos), create_class.__name__, ts)
-        self.session.add_all(halos)
-        self.session.commit()
+        with parallel_tasks.ExclusiveLock("add_simulation"):
+            self.session.add_all(halos)
+            self.session.commit()
 
     def add_timestep_properties(self, ts):
         for key, value in six.iteritems(self.simulation_output.get_timestep_properties(ts.extension)):
