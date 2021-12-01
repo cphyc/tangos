@@ -4,6 +4,7 @@ import warnings
 import importlib
 import sys
 import re
+from functools import wraps
 
 import tangos.core.creator
 from .. import core, config
@@ -14,6 +15,7 @@ backend = None
 _backend_name = config.default_backend
 from .. import log
 from . import message, jobs, backends
+from .barrier import barrier
 
 
 from ..log import logger
@@ -115,16 +117,56 @@ def _server_thread():
 
 
 def _shutdown_parallelism():
-    global backend
+    global backend, _backend_name
     log.logger.info("Shutting down parallel_tasks")
     backend.barrier()
     backend.finalize()
     backend = None
-    _bankend_name = 'null'
+    _backend_name = 'null'
 
 
+def root_only(fun):
+    global backend, _backend_name
+    @wraps(fun)
+    def wrapped(*args, **kwargs):
+        logger.debug("Entering root_only %s", fun)
+        if _backend_name == "null":
+            return fun(*args, **kwargs)
 
+        if backend.rank() == 1:
+            logger.debug("XXX ROOT_ONLY: ", fun)
+            barrier()
+            ret = fun(*args, **kwargs)
+        else:
+            barrier()
+            ret = None
+        barrier()
+        logger.info("Ranks=%s, > root_only.barrier(fun=%s)", backend.rank(), fun)
+        return ret
+
+    return wrapped
+
+
+def root_first(fun):
+    global backend, _backend_name
+    @wraps(fun)
+    def wrapped(*args, **kwargs):
+        logger.debug("Entering root_first %s", fun)
+        if _backend_name == "null":
+            return fun(*args, **kwargs)
+
+        if backend.rank() == 1:
+            ret = fun(*args, **kwargs)
+            logger.info("Ranks=%s, < root_first.barrier(fun=%s)", backend.rank(), fun)
+            barrier()
+        else:
+            logger.info("Ranks=%s, < root_first.barrier(fun=%s)", backend.rank(), fun)
+            barrier()
+            ret = fun(*args, **kwargs)
+        logger.info("Ranks=%s, > root_first.barrier(fun=%s)", backend.rank(), fun)
+        return ret
+
+    return wrapped
 
 from .lock import ExclusiveLock
-from .barrier import barrier
 from . import remote_import

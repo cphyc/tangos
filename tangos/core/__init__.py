@@ -2,6 +2,7 @@ from __future__ import absolute_import
 from sqlalchemy import Index, create_engine, inspect
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, clear_mappers
+
 from .. import config
 from .. import log
 
@@ -138,10 +139,17 @@ def init_db(db_uri=None, timeout=30, verbose=None):
 
     _check_and_upgrade_database(_engine)
 
-    Session = sessionmaker(bind=_engine)
-    _internal_session=Session()
-    Base.metadata.create_all(_engine)
-    creator.set_creator(None)
+    from .. import parallel_tasks
+    
+    @parallel_tasks.root_first
+    def load_session():
+        global _internal_session, _engine, Session
+        Session = sessionmaker(bind=_engine)
+        _internal_session=Session()
+        Base.metadata.create_all(_engine)
+        creator.set_creator(None)
+
+    load_session()
 
 
 from .dictionary import _get_dict_cache_for_session, get_dict_id, get_or_create_dictionary_item

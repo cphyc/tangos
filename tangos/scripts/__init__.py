@@ -1,4 +1,5 @@
 from . import manager, writer, timelink, crosslink
+from ..log import logger
 from .. import parallel_tasks
 import tangos.tools
 import sys
@@ -36,16 +37,20 @@ def add_commands(subparse):
     tangos.tools.GenericTangosTool.add_tools(subparse)
     add_serve_tool(subparse)
 
+def start(args):
+    logger.info("start")
+    from .. import core
+    core.process_options(args)
+    core.init_db()
+    
+    args.func(args)
+
 def main():
+    logger.info("main")
     parser, subparse = manager.get_argument_parser_and_subparsers()
 
     add_commands(subparse)
 
     args = parser.parse_args()
-
-    from .. import core
-    core.process_options(args)
-    core.init_db()
-    args.func(args)
-
-
+    parallel_tasks.launch(start, args=[args])
+    

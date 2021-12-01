@@ -2,6 +2,7 @@ from __future__ import absolute_import
 from .. import core, config
 from ..core import Simulation, TimeStep
 from ..log import logger
+from .. import parallel_tasks as pt
 import six
 import numpy as np
 
@@ -22,6 +23,12 @@ class SimulationAdderUpdater(object):
     def basename(self):
         return self.simulation_output.basename
 
+    def _get_parallel_iterator(self, items):
+        if pt.backend is not None:
+            return pt.distributed(items)
+        else:
+            return items
+
     def scan_simulation_and_add_all_descendants(self):
         if not self.simulation_exists():
             logger.info("Add new simulation %r", self.basename)
@@ -32,8 +39,11 @@ class SimulationAdderUpdater(object):
 
         self.add_simulation_properties()
 
-        for ts_filename in self.simulation_output.enumerate_timestep_extensions():
+        ts_filenames = self._get_parallel_iterator(sorted(self.simulation_output.enumerate_timestep_extensions()))
+
+        for ts_filename in ts_filenames:
             if not self.timestep_exists_for_extension(ts_filename):
+                logger.debug("Working with %r", ts_filename)
                 ts = self.add_timestep(ts_filename)
                 self.add_timestep_properties(ts)
                 self.add_objects_to_timestep(ts, core.halo.Halo)
@@ -57,11 +67,14 @@ class SimulationAdderUpdater(object):
         ex = TimeStep(self._get_simulation(), ts_extension)
         return self.session.merge(ex)
 
+    @pt.root_only
     def add_simulation(self):
         sim = Simulation(self.basename)
+
         self.session.add(sim)
         self.session.commit()
 
+    @pt.root_only
     def add_simulation_properties(self):
         sim = self._get_simulation()
         properties_dict = self.simulation_output.get_properties()
@@ -120,7 +133,8 @@ class SimulationAdderUpdater(object):
 
         logger.info("Add %d %ss to timestep %r", len(halos), create_class.__name__, ts)
         self.session.add_all(halos)
-        self.session.commit()
+        with pt.ExclusiveLock("add_objects_to_timestep"):
+            self.session.commit()
 
     def add_timestep_properties(self, ts):
         for key, value in six.iteritems(self.simulation_output.get_timestep_properties(ts.extension)):

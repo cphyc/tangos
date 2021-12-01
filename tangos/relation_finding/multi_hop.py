@@ -20,6 +20,10 @@ from ..config import num_multihops_max_default as NHOPS_MAX_DEFAULT
 from ..config import max_relative_time_difference as SMALL_FRACTION
 from six.moves import range
 
+import warnings
+
+warnings.filterwarnings("ignore", ".*", category=sqlalchemy.exc.SAWarning)
+
 class MultiHopStrategy(HopStrategy):
     """An extension of the HopStrategy class that takes multiple hops across
     HaloLinks, up to a specified maximum, before finding the target halo."""

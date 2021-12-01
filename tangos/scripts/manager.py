@@ -21,6 +21,7 @@ from tangos.input_handlers import get_named_handler_class
 from tangos.tools.add_simulation import SimulationAdderUpdater
 from tangos.log import logger
 from six.moves import input
+from tangos import parallel_tasks as pt
 
 
 def add_simulation_timesteps(options):
@@ -28,6 +29,7 @@ def add_simulation_timesteps(options):
     output_class = get_named_handler_class(handler).best_matching_handler(options.sim)
     output_object = output_class(options.sim)
     output_object.quicker = options.quicker
+
     adder = SimulationAdderUpdater(output_object,renumber=not options.no_renumber)
     adder.min_halo_particles = options.min_particles
     adder.max_num_objects = options.max_objects
@@ -439,6 +441,8 @@ def get_argument_parser_and_subparsers():
                               help="Cut corners/make guesses to import quickly and with minimum memory usage. Only use if you understand the consequences!")
     subparse_add.add_argument("--no-renumber", action="store_true",
                               help="By default tangos renumbers halos to start from 1, in decreasing order of dark matter particles. Set this flag to keep the original halo finder numbers.")
+    subparse_add.add_argument("--backend", type=str, default=config.default_backend,
+                              help="Specify the paralellism backend (e.g. pypar, mpi4py)")
     subparse_add.set_defaults(func=add_simulation_timesteps)
 
     subparse_recentruns = subparse.add_parser("recent-runs",
