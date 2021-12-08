@@ -67,7 +67,7 @@ class PatternBasedFileDiscovery(object):
             if self._is_able_to_load(e):
                 yield e[len(base) + 1:]
             else:
-                logger.info("Could not load %s",e)
+                logger.info("Could not load %s with class %s", e, self)
 
     def _is_able_to_load(self, fname):
         """Determine whether a named file can be loaded

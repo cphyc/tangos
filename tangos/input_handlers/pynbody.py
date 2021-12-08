@@ -5,17 +5,19 @@ import os
 import os.path
 import time
 import weakref
-import re
 import numpy as np
+from itertools import chain
+from more_itertools import always_iterable
 from ..util import proxy_object
 
 pynbody = None # deferred import; occurs when a PynbodyInputHandler is constructed
 
-from . import halo_stat_files, finding
+from . import finding
 from . import HandlerBase
 from .. import config
 from ..log import logger
 from six.moves import range
+
 
 
 _loaded_halocats = {}
@@ -32,6 +34,8 @@ class DummyTimeStep(object):
 
 
 class PynbodyInputHandler(finding.PatternBasedFileDiscovery, HandlerBase):
+    pynbody_halo_class_name = None
+
     def __new__(cls, *args, **kwargs):
         import pynbody as pynbody_local
 
@@ -48,6 +52,14 @@ class PynbodyInputHandler(finding.PatternBasedFileDiscovery, HandlerBase):
         pynbody_version = getattr(pynbody, "__version__","0.00")
         assert pynbody_version>="0.46", "Tangos requires pynbody 0.46 or later"
 
+    @classmethod
+    def _construct_pynbody_halos(cls, sim, *args, **kwargs):
+        if cls.pynbody_halo_class_name is None:
+            return sim.halos(*args, **kwargs)
+        else:
+            halo_class = getattr(pynbody.halo, cls.pynbody_halo_class_name)
+            return halo_class(sim, *args, **kwargs)
+
     def _is_able_to_load(self, ts_extension):
         filepath = self._extension_to_filename(ts_extension)
         try:
@@ -55,7 +67,8 @@ class PynbodyInputHandler(finding.PatternBasedFileDiscovery, HandlerBase):
             if self.quicker:
                 logger.warn("Pynbody was able to load %r, but because 'quicker' flag is set we won't check whether it can also load the halo files", filepath)
             else:
-                h = f.halos()
+                h = self._construct_pynbody_halos(f)
+
             return True
         except (IOError, RuntimeError):
             return False
@@ -174,19 +187,19 @@ class PynbodyInputHandler(finding.PatternBasedFileDiscovery, HandlerBase):
         f = self.load_timestep(ts_extension)
         h = _loaded_halocats.get(id(f), lambda: None)()
         if h is None:
-            h = f.halos()
+            h = self._construct_pynbody_halos(f)
             if isinstance(h, pynbody.halo.SubfindCatalogue):
-                h = f.halos(subs=True)
+                # ugly fix - loads groups by default, wanted halos
+                h = self._construct_pynbody_halos(f, subs=True)
             _loaded_halocats[id(f)] = weakref.ref(h)
             f._db_current_halocat = h # keep alive for lifetime of simulation
         return h  # pynbody.halo.AmigaGrpCatalogue(f)
 
 
-
-
     def match_objects(self, ts1, ts2, halo_min, halo_max,
                       dm_only=False, threshold=0.005, object_typetag='halo',
-                      output_handler_for_ts2=None):
+                      output_handler_for_ts2=None,
+                      fuzzy_match_kwa={}):
         if dm_only:
             only_family='dm'
         else:
@@ -206,8 +219,19 @@ class PynbodyInputHandler(finding.PatternBasedFileDiscovery, HandlerBase):
         if halo_max is None:
             halo_max = max(len(h2), len(h1))
 
-        return f1.bridge(f2).fuzzy_match_catalog(halo_min, halo_max, threshold=threshold,
-                                                 only_family=only_family, groups_1=h1, groups_2=h2)
+        return self.create_bridge(f1, f2).fuzzy_match_catalog(
+            halo_min,
+            halo_max,
+            threshold=threshold,
+            only_family=only_family,
+            groups_1=h1,
+            groups_2=h2,
+            **fuzzy_match_kwa,
+        )
+
+    @classmethod
+    def create_bridge(f1, f2):
+        return f1.bridge(f2)
 
     def enumerate_objects(self, ts_extension, object_typetag="halo", min_halo_particles=config.min_halo_particles):
         if self._can_enumerate_objects_from_statfile(ts_extension, object_typetag):
@@ -216,6 +240,7 @@ class PynbodyInputHandler(finding.PatternBasedFileDiscovery, HandlerBase):
         else:
             logger.warn("No halo statistics file found for timestep %r",ts_extension)
 
+            snapshot_keep_alive = self.load_timestep(ts_extension)
             try:
                 h = self._construct_halo_cat(ts_extension, object_typetag)
             except:
@@ -236,7 +261,7 @@ class PynbodyInputHandler(finding.PatternBasedFileDiscovery, HandlerBase):
             for i in range(istart, len(h)+istart):
                 try:
                     hi = h[i]
-                    if len(hi.dm)+len(hi.star)+len(hi.gas) > min_halo_particles:
+                    if len(hi.dm) + len(hi.star) + len(hi.gas) >= min_halo_particles:
                         yield i, i, len(hi.dm), len(hi.star), len(hi.gas)
                 except (ValueError, KeyError) as e:
                     pass
@@ -298,30 +323,6 @@ class PynbodyInputHandler(finding.PatternBasedFileDiscovery, HandlerBase):
         logger.warn(" -- it will certainly be wrong for e.g. zoom simulations")
         return estimated_part_mass
 
-class RamsesHOPInputHandler(PynbodyInputHandler):
-    patterns = ["output_0????"]
-
-    def match_objects(self, ts1, ts2, halo_min, halo_max,
-                      dm_only=False, threshold=0.005, object_typetag='halo',
-                      output_handler_for_ts2=None):
-
-        f1 = self.load_timestep(ts1).dm
-        h1 = self._construct_halo_cat(ts1, object_typetag)
-
-        if output_handler_for_ts2 is None:
-            f2 = self.load_timestep(ts2).dm
-            h2 = self._construct_halo_cat(ts2, object_typetag)
-        else:
-            f2 = output_handler_for_ts2.load_timestep(ts2).dm
-            h2 = output_handler_for_ts2._construct_halo_cat(ts2, object_typetag)
-
-        bridge = pynbody.bridge.OrderBridge(f1,f2, monotonic=False)
-
-        return bridge.fuzzy_match_catalog(halo_min, halo_max, threshold=threshold,
-                                          only_family=pynbody.family.dm, groups_1=h1, groups_2=h2)
-
-
-
 
 class GadgetSubfindInputHandler(PynbodyInputHandler):
     patterns = ["snapshot_???"]
@@ -346,7 +347,7 @@ class GadgetSubfindInputHandler(PynbodyInputHandler):
         f = self.load_timestep(ts_extension)
         h = _loaded_halocats.get(id(f)+1, lambda: None)()
         if h is None:
-            h = f.halos()
+            h = self._construct_pynbody_halos(f)
             assert isinstance(h, pynbody.halo.SubfindCatalogue)
             _loaded_halocats[id(f)+1] = weakref.ref(h)
             f._db_current_groupcat = h  # keep alive for lifetime of simulation
@@ -449,6 +450,7 @@ class GadgetAHFInputHandler(PynbodyInputHandler):
             return True
         except (IOError, RuntimeError):
             return False
+
 
 
 
@@ -571,4 +573,13 @@ class ChangaInputHandler(PynbodyInputHandler):
                 pass
         return out
 
-from . import caterpillar, eagle
+class ChangaIgnoreIDLInputHandler(ChangaInputHandler):
+    pynbody_halo_class_name = "AHFCatalogue"
+    halo_stat_file_class_name = "AHFStatFile"
+
+class ChangaUseIDLInputHandler(ChangaInputHandler):
+    pynbody_halo_class_name = "AmigaGrpCatalogue"
+    halo_stat_file_class_name = "AmigaIDLStatFile"
+    auxiliary_file_patterns = ["*.amiga.grp"]
+
+from . import caterpillar, eagle, ramsesHOP
